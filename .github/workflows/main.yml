@@ -1,0 +1,327 @@
+name: Windows Desktop - NoMachine + Tailscale
+
+on:
+  workflow_dispatch:
+
+jobs:
+  desktop:
+    runs-on: windows-latest
+    timeout-minutes: 360
+
+    steps:
+      # ──────────────────────────────────────────────
+      # STEP 1: Show login credentials at the START
+      # so you can see them immediately in logs
+      # ──────────────────────────────────────────────
+      - name: 🔐 Show Credentials (READ THIS FIRST)
+        run: |
+          echo "=============================================="
+          echo "   🔐 YOUR REMOTE DESKTOP CREDENTIALS"
+          echo "=============================================="
+          echo ""
+          echo "   Username : $env:USERNAME"
+          echo "   Password : ${{ secrets.RDP_PASSWORD }}"
+          echo ""
+          echo "   ⚠️ Save these now before session starts!"
+          echo ""
+          echo "   Tailscale IP will appear in Step 6 logs."
+          echo ""
+          echo "=============================================="
+        shell: powershell
+
+      # ──────────────────────────────────────────────
+      # STEP 2: Set password
+      # ──────────────────────────────────────────────
+      - name: 🔑 Set RDP Password
+        run: |
+          $user = $env:USERNAME
+          $pass = "${{ secrets.RDP_PASSWORD }}"
+          net user $user $pass
+          echo "✅ Password set for user: $user"
+        shell: powershell
+
+      # ──────────────────────────────────────────────
+      # STEP 3: Enable RDP
+      # ──────────────────────────────────────────────
+      - name: 🖥️ Enable RDP
+        run: |
+          Set-ItemProperty `
+            -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+            -Name "fDenyTSConnections" -Value 0
+
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+
+          Set-ItemProperty `
+            -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+            -Name "UserAuthentication" -Value 0
+
+          echo "✅ RDP enabled on port 3389"
+        shell: powershell
+
+      # ──────────────────────────────────────────────
+      # STEP 4: Install NoMachine Server
+      # ──────────────────────────────────────────────
+      - name: 📦 Install NoMachine Server
+        run: |
+          $url  = "https://download.nomachine.com/download/8.16/Windows/nomachine_8.16.1_1_x64.exe"
+          $dest = "C:\nomachine_setup.exe"
+
+          echo "⬇️ Downloading NoMachine..."
+          Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing
+
+          echo "📦 Installing silently..."
+          Start-Process -FilePath $dest `
+            -ArgumentList "/verysilent /norestart" `
+            -Wait
+
+          Start-Sleep -Seconds 15
+
+          # Find install path
+          $paths = @(
+            "C:\Program Files\NoMachine",
+            "C:\Program Files (x86)\NoMachine"
+          )
+          foreach ($p in $paths) {
+            if (Test-Path "$p\bin\nxserver.exe") {
+              echo "✅ NoMachine found at: $p"
+              break
+            }
+          }
+
+          # Open firewall for NX protocol
+          New-NetFirewallRule `
+            -DisplayName "NoMachine NX Port 4000" `
+            -Direction Inbound `
+            -LocalPort 4000 `
+            -Protocol TCP `
+            -Action Allow | Out-Null
+
+          echo "✅ Firewall opened for port 4000"
+        shell: powershell
+
+      # ──────────────────────────────────────────────
+      # STEP 5: Install apps via Chocolatey
+      #         - Brave Browser
+      #         - VSCodium
+      #         - Antigravity IDE
+      # ──────────────────────────────────────────────
+      - name: 📦 Install Brave Browser
+        run: |
+          echo "⬇️ Installing Brave..."
+          choco install brave -y --no-progress
+          echo "✅ Brave installed"
+        shell: powershell
+
+      - name: 📦 Install VSCodium
+        run: |
+          echo "⬇️ Installing VSCodium..."
+          choco install vscodium -y --no-progress
+          echo "✅ VSCodium installed"
+        shell: powershell
+
+      - name: 📦 Install Antigravity IDE
+        run: |
+          echo "⬇️ Downloading Antigravity IDE..."
+
+          # Antigravity IDE official installer
+          $url  = "https://github.com/antigravity-ide/antigravity/releases/latest/download/Antigravity-Setup-Windows.exe"
+          $dest = "C:\antigravity_setup.exe"
+
+          try {
+            Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing
+            echo "📦 Installing Antigravity IDE silently..."
+            Start-Process -FilePath $dest `
+              -ArgumentList "--silent" `
+              -Wait
+            echo "✅ Antigravity IDE installed"
+          } catch {
+            echo "⚠️ Direct download failed. Trying winget..."
+            try {
+              winget install --id AntigravityIDE.Antigravity -e --silent --accept-package-agreements --accept-source-agreements
+              echo "✅ Antigravity IDE installed via winget"
+            } catch {
+              echo "⚠️ winget also failed. Installing via choco as fallback..."
+              choco install antigravity -y --no-progress 2>$null
+              echo "ℹ️ Check C:\ProgramData\chocolatey\logs\chocolatey.log for details"
+            }
+          }
+        shell: powershell
+
+      # ──────────────────────────────────────────────
+      # STEP 6: Install and connect Tailscale
+      # ──────────────────────────────────────────────
+      - name: 📡 Install Tailscale
+        run: |
+          $url  = "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe"
+          $dest = "C:\tailscale_setup.exe"
+
+          echo "⬇️ Downloading Tailscale..."
+          Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing
+
+          echo "📦 Installing Tailscale..."
+          Start-Process -FilePath $dest `
+            -ArgumentList "/install /quiet" `
+            -Wait
+
+          Start-Sleep -Seconds 10
+          echo "✅ Tailscale installed"
+        shell: powershell
+
+      - name: 📡 Connect Tailscale + Show Full Connection Info
+        run: |
+          # Start service
+          Start-Service -Name "Tailscale" -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 5
+
+          # Find tailscale binary
+          $ts = @(
+            "C:\Program Files\Tailscale\tailscale.exe",
+            "C:\Program Files (x86)\Tailscale\tailscale.exe"
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+          if (-not $ts) {
+            $ts = (Get-Command tailscale -ErrorAction SilentlyContinue).Source
+          }
+
+          if (-not $ts) {
+            echo "❌ tailscale.exe not found!"
+            exit 1
+          }
+
+          # Connect to Tailscale network
+          & $ts up `
+            --authkey="${{ secrets.TAILSCALE_AUTHKEY }}" `
+            --hostname="github-runner-windows" `
+            --accept-routes
+
+          Start-Sleep -Seconds 12
+
+          # Get Tailscale IP
+          $tsIP = & $ts ip -4 2>&1
+          $tsIP = $tsIP.Trim()
+
+          echo ""
+          echo "=================================================="
+          echo "   🖥️  WINDOWS REMOTE DESKTOP - CONNECTION INFO   "
+          echo "=================================================="
+          echo ""
+          echo "   🌐 Tailscale IP  : $tsIP"
+          echo "   👤 Username      : $env:USERNAME"
+          echo "   🔑 Password      : ${{ secrets.RDP_PASSWORD }}"
+          echo ""
+          echo "  ┌─────────────────────────────────────────────┐"
+          echo "  │   📌 NoMachine (BEST - use this!)           │"
+          echo "  │   Protocol : NX                             │"
+          echo "  │   Host     : $tsIP"
+          echo "  │   Port     : 4000                           │"
+          echo "  │   User     : $env:USERNAME"
+          echo "  │   Pass     : ${{ secrets.RDP_PASSWORD }}"
+          echo "  └─────────────────────────────────────────────┘"
+          echo ""
+          echo "  ┌─────────────────────────────────────────────┐"
+          echo "  │   📌 Standard RDP (backup)                  │"
+          echo "  │   Host     : $tsIP"
+          echo "  │   Port     : 3389                           │"
+          echo "  │   User     : $env:USERNAME"
+          echo "  │   Pass     : ${{ secrets.RDP_PASSWORD }}"
+          echo "  └─────────────────────────────────────────────┘"
+          echo ""
+          echo "  📥 NoMachine Client Download:"
+          echo "     https://www.nomachine.com/download"
+          echo ""
+          echo "  ✅ Apps Installed:"
+          echo "     🦁 Brave Browser"
+          echo "     🆚 VSCodium"
+          echo "     🚀 Antigravity IDE"
+          echo ""
+          echo "=================================================="
+        shell: powershell
+
+      # ──────────────────────────────────────────────
+      # STEP 7: Verify everything is running
+      # ──────────────────────────────────────────────
+      - name: 🔍 Verify All Services
+        run: |
+          echo "── Ports Listening ──────────────────"
+          netstat -an | findstr "3389 4000 LISTENING"
+
+          echo ""
+          echo "── Services Status ──────────────────"
+          @("TermService", "Tailscale") | ForEach-Object {
+            $svc = Get-Service -Name $_ -ErrorAction SilentlyContinue
+            if ($svc) {
+              echo "$_ : $($svc.Status)"
+            } else {
+              echo "$_ : NOT FOUND"
+            }
+          }
+
+          echo ""
+          echo "── Installed Apps Check ─────────────"
+
+          $apps = @{
+            "Brave"         = @("C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe")
+            "VSCodium"      = @("C:\Program Files\VSCodium\VSCodium.exe", "C:\Users\$env:USERNAME\AppData\Local\Programs\VSCodium\VSCodium.exe")
+            "Antigravity"   = @("C:\Program Files\Antigravity\Antigravity.exe", "C:\Users\$env:USERNAME\AppData\Local\Programs\Antigravity\Antigravity.exe")
+          }
+
+          foreach ($app in $apps.GetEnumerator()) {
+            $found = $false
+            foreach ($path in $app.Value) {
+              if (Test-Path $path) {
+                echo "✅ $($app.Key) found at: $path"
+                $found = $true
+                break
+              }
+            }
+            if (-not $found) {
+              echo "⚠️ $($app.Key) not found at expected paths"
+            }
+          }
+
+          echo ""
+          echo "── NoMachine Status ─────────────────"
+          $nxPaths = @(
+            "C:\Program Files\NoMachine\bin\nxserver.exe",
+            "C:\Program Files (x86)\NoMachine\bin\nxserver.exe"
+          )
+          foreach ($nx in $nxPaths) {
+            if (Test-Path $nx) {
+              & $nx --status 2>&1 | Select-Object -First 5
+              break
+            }
+          }
+        shell: powershell
+
+      # ──────────────────────────────────────────────
+      # STEP 8: Keep alive with heartbeat
+      # ──────────────────────────────────────────────
+      - name: ⏳ Keep Session Alive (~6 hours)
+        run: |
+          echo ""
+          echo "🟢 Session is LIVE and ready!"
+          echo "📡 Connect using the info shown in Step 6"
+          echo "⏰ Auto-expires in ~6 hours"
+          echo "🛑 To end early: cancel this workflow run"
+          echo ""
+
+          $start     = Get-Date
+          $maxMins   = 345
+          $interval  = 60
+
+          while ($true) {
+            $elapsed  = (Get-Date) - $start
+            $elMins   = [math]::Floor($elapsed.TotalMinutes)
+            $elHrs    = [math]::Floor($elapsed.TotalHours)
+            $elMinRem = $elapsed.Minutes
+            $remaining = $maxMins - $elMins
+
+            if ($elMins -ge $maxMins) {
+              echo "⏰ Max session time reached. Ending."
+              break
+            }
+
+            echo "⏱️  Uptime: ${elHrs}h ${elMinRem}m | Remaining: ~${remaining} min | Session alive..."
+            Start-Sleep -Seconds $interval
+          }
+        shell: powershell
