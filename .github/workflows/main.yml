@@ -63,53 +63,22 @@ jobs:
       # ──────────────────────────────────────────────
       - name: 📦 Install NoMachine Server
         run: |
-          $url  = "https://web9001.nomachine.com/download/9.7/Windows/nomachine_9.7.3_1_x64.exe"
-          $dest = "C:\nomachine_setup.exe"
+          Write-Host "Installing NoMachine via Chocolatey..."
+          choco install nomachine -y --no-progress
 
-          Write-Host "Downloading NoMachine 9.7.3..."
-          Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing
-
-          # Verify the file downloaded correctly
-          $fileSize = (Get-Item $dest).Length
-          Write-Host "Downloaded file size: $fileSize bytes"
-
-          if ($fileSize -lt 1MB) {
-            Write-Host "ERROR: File too small, download likely failed"
-            exit 1
-          }
-
-          # Verify it's a valid PE executable
-          $bytes = [System.IO.File]::ReadAllBytes($dest)
-          $magic = [System.Text.Encoding]::ASCII.GetString($bytes[0..1])
-          if ($magic -ne "MZ") {
-            Write-Host "ERROR: Downloaded file is not a valid Windows executable (magic: $magic)"
-            exit 1
-          }
-
-          Write-Host "File verified as valid Windows executable"
-          Write-Host "Installing NoMachine silently..."
-
-          $proc = Start-Process -FilePath $dest `
-            -ArgumentList "/verysilent /norestart" `
-            -Wait `
-            -PassThru
-
-          Write-Host "Installer exit code: $($proc.ExitCode)"
           Start-Sleep -Seconds 20
 
-          # Find install path
+          # Find install path and start service
           $paths = @(
             "C:\Program Files\NoMachine",
             "C:\Program Files (x86)\NoMachine"
           )
 
-          $found = $false
           foreach ($p in $paths) {
             if (Test-Path "$p\bin\nxserver.exe") {
               Write-Host "NoMachine found at: $p"
-              $found = $true
 
-              # Start NX service if not running
+              # Start NX service
               & "$p\bin\nxserver.exe" --startup 2>&1
               Start-Sleep -Seconds 5
               & "$p\bin\nxserver.exe" --status 2>&1
@@ -117,12 +86,7 @@ jobs:
             }
           }
 
-          if (-not $found) {
-            Write-Host "NoMachine binary not found, checking all installed programs..."
-            Get-ChildItem "C:\Program Files" -Directory | Select-Object Name
-          }
-
-          # Open firewall for NX protocol
+          # Open firewall ports
           New-NetFirewallRule `
             -DisplayName "NoMachine NX Port 4000" `
             -Direction Inbound `
@@ -130,7 +94,6 @@ jobs:
             -Protocol TCP `
             -Action Allow | Out-Null
 
-          # Also open port 4080 (NoMachine web) and 4443 (NoMachine HTTPS)
           New-NetFirewallRule `
             -DisplayName "NoMachine Web Port 4080" `
             -Direction Inbound `
@@ -138,9 +101,8 @@ jobs:
             -Protocol TCP `
             -Action Allow | Out-Null
 
-          Write-Host "Firewall rules added for ports 4000 and 4080"
+          Write-Host "NoMachine install complete. Ports 4000 and 4080 opened."
         shell: powershell
-
       # ──────────────────────────────────────────────
       # STEP 5: Install apps via Chocolatey
       # ──────────────────────────────────────────────
