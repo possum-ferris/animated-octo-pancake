@@ -190,7 +190,7 @@ jobs:
 
           # Connect to Tailscale network
           & $ts up `
-            --authkey="${{ secrets.TAILSCALE_AUTHKEY }}" `
+            --authkey='${{ secrets.TAILSCALE_AUTHKEY }}' `
             --hostname="github-runner-windows" `
             --accept-routes
 
